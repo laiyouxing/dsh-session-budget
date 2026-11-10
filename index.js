@@ -1330,35 +1330,24 @@ export function apply(ctx, rawConfig) {
     }
   }
 
-  const commands = (() => {
-    try {
-      return ctx.get('commands')
-    } catch (error) {
-      return undefined
-    }
-  })()
-  if (commands !== undefined && commands !== null) {
-    ctx.effect(() => commands.register({
+  // Services may mount after this plugin, so wait for them instead of sampling the
+  // container once at apply time. Sampling once left every route unmounted whenever
+  // the web server happened to load later, which surfaced as 404s in the settings page.
+  ctx.inject(['commands'], (inner) => {
+    if (inner.commands === undefined || inner.commands === null) return
+    inner.effect(() => inner.commands.register({
       name: 'budget',
       description: '查看或设置本会话的用量上限（token / 金额 / 时长）与峰时自动恢复，到达上限即停止模型会话',
       input: { hint: '[status | set tokens=200k money=5 time=60m | peak on|off|auto | reset | off]' },
       handler: handleCommand,
     }), 'session-budget.command')
-  } else {
-    log?.info?.('session-budget: the commands service is not mounted; the Web UI strip remains available')
-  }
+  })
 
   // ------------------------------------------------------------- Web UI JSON
 
-  const webServer = (() => {
-    try {
-      return ctx.get('webServer')
-    } catch (error) {
-      return undefined
-    }
-  })()
-
-  if (webServer !== undefined && webServer !== null) {
+  ctx.inject(['webServer'], (web) => {
+    const webServer = web.webServer
+    if (webServer === undefined || webServer === null) return
     const sendJson = (res, status, body) => {
       res.writeHead(status, {
         'content-type': 'application/json; charset=utf-8',
@@ -1494,8 +1483,8 @@ export function apply(ctx, rawConfig) {
         }
       }
     }
-    ctx.effect(() => webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }), 'session-budget.route')
-  }
+    web.effect(() => webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }), 'session-budget.route')
+  })
 
   ctx.effect(() => () => {
     void store.dispose()

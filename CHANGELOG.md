@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.3] - 2026-11-10
+
+### Fixed
+
+- The HTTP routes (and the `/budget` command) now mount through `ctx.inject(['webServer'], …)` / `ctx.inject(['commands'], …)` instead of sampling `ctx.get(...)` once at apply time. When the web server happened to mount after this plugin, no route under `/session-budget` was registered and every request returned 404 — the settings page could not load or save, so peak windows were uneditable. `ctx.inject` waits for the service, so mount order no longer matters.
+
 ## [1.5.2] - 2026-11-10
 
 ### Fixed

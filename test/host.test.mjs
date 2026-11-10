@@ -49,6 +49,15 @@ const ctx = {
     effects.push(disposer)
     return () => {}
   },
+  // The plugin starts its optional services with `ctx.inject([...], cb)` so it works
+  // no matter which entry mounts first; the stub runs the callback with a child ctx
+  // whose services are available as properties, like the real Cordis fiber.
+  inject(services, callback) {
+    const child = { ...ctx }
+    for (const name of services) child[name] = ctx.get(name)
+    callback(child)
+    return () => {}
+  },
   get(service) {
     if (service === 'agents') return { get: (id) => agents.find((a) => a.id === id), list: () => agents }
     if (service === 'goals') {
