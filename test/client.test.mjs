@@ -143,11 +143,13 @@ assert(!allStyles.some((style) => style.minWidth === 132 || style.flex === '1 1 
 assert(allStyles.some((style) => style.minWidth === 0), 'flex children may shrink (minWidth 0 present)')
 const root = tree2.props.style
 assert(root.minWidth === 0, 'root clamps to slot width')
-// The composer stack centers its children and caps them at the card width; the
-// strip must follow the same contract or it grows wider than the input card.
-assert(root.width === '100%', 'root fills the composer stack width')
-assert(root.maxWidth === 'var(--dsh-composer-card-max-width)', 'root caps at the composer card width')
-assert(root.boxSizing === 'border-box', 'root counts padding inside that width')
+// The composer stack is a bare column flex; the input card sits in a root that
+// pads by --dsh-composer-side-clearance and centers a child capped at
+// --dsh-composer-card-max-width. The strip must reproduce both layers, otherwise
+// it renders as wide as the whole stack and overflows the input card.
+assert(root.width === '100%', 'wrapper fills the composer stack width')
+assert(root.display === 'flex' && root.flexDirection === 'column', 'wrapper stacks the card')
+assert(String(root.padding ?? '').includes('var(--dsh-composer-side-clearance)'), 'wrapper pads like the input root')
 const marginParts = String(root.margin ?? '0').split(/\s+/)
 const horizontal = marginParts.length === 1
   ? [marginParts[0]]
@@ -156,10 +158,14 @@ const horizontal = marginParts.length === 1
     : marginParts.length === 3
       ? [marginParts[1]]
       : [marginParts[1], marginParts[3]]
-assert(horizontal.every((value) => value === '0' || value === '0px'), 'root adds no horizontal margin that would overflow the card')
-assert(typeof root.border === 'string' && root.border.includes('1px solid'), 'root restores the visible frame')
-assert(typeof root.borderRadius === 'number' && root.borderRadius > 0, 'root is a rounded card')
-assert(typeof root.background === 'string' && root.background !== '', 'root paints a card surface')
+assert(horizontal.every((value) => value === '0' || value === '0px'), 'wrapper adds no horizontal margin that would overflow the card')
+const card = allStyles.find((style) => typeof style.border === 'string' && style.border.includes('1px solid'))
+assert(card !== undefined, 'card restores the visible frame')
+assert(card.width === '100%', 'card fills the padded wrapper')
+assert(card.maxWidth === 'var(--dsh-composer-card-max-width)', 'card caps at the composer card width')
+assert(card.boxSizing === 'border-box', 'card counts padding inside that width')
+assert(typeof card.borderRadius === 'number' && card.borderRadius > 0, 'card is rounded')
+assert(typeof card.background === 'string' && card.background !== '', 'card paints a surface')
 
 // --- scenario 3: peak window active, editor open ---------------------------
 const peakView = {

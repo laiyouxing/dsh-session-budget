@@ -540,53 +540,69 @@ window.__ModuleLoader__.load({
         ]),
       ]) : null
 
+      // Two layers, mirroring the shipped composer geometry: `conversation.input.dock`
+      // renders straight into the composer stack (a plain column flex with no padding),
+      // while the input card lives inside a root that pads by
+      // `--dsh-composer-side-clearance` and centers a child capped at
+      // `--dsh-composer-card-max-width`. Reproducing both keeps this strip exactly as
+      // wide as the input card instead of the full stack width.
       return h('div', {
         style: {
           display: 'flex',
           flexDirection: 'column',
+          alignItems: 'center',
           boxSizing: 'border-box',
-          // Match the composer card exactly: the composer stack centers its
-          // children and caps them at this variable, so 100% + max-width lines
-          // this strip up with the input card instead of overflowing it.
           width: '100%',
-          maxWidth: 'var(--dsh-composer-card-max-width)',
           minWidth: 0,
           margin: '4px 0 2px',
-          padding: '1px 8px',
-          border: '1px solid var(--dsw-alias-border-l1)',
-          borderRadius: 9,
-          background: 'var(--dsw-alias-bg-layer-1)',
-          color: 'var(--dsw-alias-label-primary)',
-          fontFamily: 'inherit',
+          padding: '0 var(--dsh-composer-side-clearance)',
         },
       }, [
         h('div', {
-          key: 'row',
+          key: 'card',
           style: {
             display: 'flex',
-            alignItems: 'center',
-            gap: 8,
+            flexDirection: 'column',
+            boxSizing: 'border-box',
+            width: '100%',
+            maxWidth: 'var(--dsh-composer-card-max-width)',
             minWidth: 0,
-            minHeight: 20,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
+            padding: '1px 8px',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            borderRadius: 9,
+            background: 'var(--dsw-alias-bg-layer-1)',
+            color: 'var(--dsw-alias-label-primary)',
+            fontFamily: 'inherit',
           },
         }, [
-          h('span', {
-            key: 'metrics',
+          h('div', {
+            key: 'row',
             style: {
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              flex: '0 1 auto',
               minWidth: 0,
+              minHeight: 20,
+              whiteSpace: 'nowrap',
               overflow: 'hidden',
             },
-          }, [dot, stopTag, peakTag, summary].filter(Boolean)),
-          h('span', { key: 'spacer', style: { flex: '1 1 0', minWidth: 4 } }),
-          toggle,
+          }, [
+            h('span', {
+              key: 'metrics',
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flex: '0 1 auto',
+                minWidth: 0,
+                overflow: 'hidden',
+              },
+            }, [dot, stopTag, peakTag, summary].filter(Boolean)),
+            h('span', { key: 'spacer', style: { flex: '1 1 0', minWidth: 4 } }),
+            toggle,
+          ]),
+          editor,
         ]),
-        editor,
       ])
     }
 

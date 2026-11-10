@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- Composer strip no longer grows wider than the input card: it now fills the composer stack and caps at `var(--dsh-composer-card-max-width)` with `box-sizing: border-box` and no horizontal margin, matching the shipped goal/queue dock contract.
+- Composer strip no longer grows wider than the input card: `conversation.input.dock` renders into a bare column flex, so the strip now reproduces the composer geometry itself — a wrapper padded by `var(--dsh-composer-side-clearance)` around a card capped at `var(--dsh-composer-card-max-width)` — instead of stretching to the full stack width.
 
 ## [1.5.0] - 2026-11-10
 
