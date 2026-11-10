@@ -143,26 +143,20 @@ assert(!allStyles.some((style) => style.minWidth === 132 || style.flex === '1 1 
 assert(allStyles.some((style) => style.minWidth === 0), 'flex children may shrink (minWidth 0 present)')
 const root = tree2.props.style
 assert(root.minWidth === 0, 'root clamps to slot width')
-// The composer stack is a bare column flex; the input card sits in a root that
-// pads by --dsh-composer-side-clearance and centers a child capped at
-// --dsh-composer-card-max-width. The strip must reproduce both layers, otherwise
-// it renders as wide as the whole stack and overflows the input card.
-assert(root.width === '100%', 'wrapper fills the composer stack width')
+// The composer stack is a bare column flex; the shipped dock contract (queue dock)
+// subtracts the side clearance plus its own inset, caps at the card width minus
+// that inset, and centers itself. The strip must follow it or it fills the whole
+// stack and overflows the input card.
 assert(root.display === 'flex' && root.flexDirection === 'column', 'wrapper stacks the card')
-assert(String(root.padding ?? '').includes('var(--dsh-composer-side-clearance)'), 'wrapper pads like the input root')
-const marginParts = String(root.margin ?? '0').split(/\s+/)
-const horizontal = marginParts.length === 1
-  ? [marginParts[0]]
-  : marginParts.length === 2
-    ? [marginParts[1]]
-    : marginParts.length === 3
-      ? [marginParts[1]]
-      : [marginParts[1], marginParts[3]]
-assert(horizontal.every((value) => value === '0' || value === '0px'), 'wrapper adds no horizontal margin that would overflow the card')
+assert(String(root.width ?? '').startsWith('calc(100% - var(--dsh-composer-side-clearance)'), 'wrapper subtracts the composer side clearance')
+assert(String(root.width ?? '').includes('var(--dsh-composer-dock-inset)'), 'wrapper also subtracts its own dock inset')
+assert(String(root.maxWidth ?? '').startsWith('calc(var(--dsh-composer-card-max-width)'), 'wrapper caps at the composer card width')
+assert(String(root.boxSizing ?? '') === 'border-box', 'wrapper counts padding inside that width')
+assert(String(root.margin ?? '').includes('auto'), 'wrapper centers itself horizontally')
 const card = allStyles.find((style) => typeof style.border === 'string' && style.border.includes('1px solid'))
 assert(card !== undefined, 'card restores the visible frame')
-assert(card.width === '100%', 'card fills the padded wrapper')
-assert(card.maxWidth === 'var(--dsh-composer-card-max-width)', 'card caps at the composer card width')
+assert(card.width === '100%', 'card fills the centered wrapper')
+assert(card.maxWidth === undefined, 'card does not add a second width cap')
 assert(card.boxSizing === 'border-box', 'card counts padding inside that width')
 assert(typeof card.borderRadius === 'number' && card.borderRadius > 0, 'card is rounded')
 assert(typeof card.background === 'string' && card.background !== '', 'card paints a surface')

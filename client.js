@@ -540,22 +540,23 @@ window.__ModuleLoader__.load({
         ]),
       ]) : null
 
-      // Two layers, mirroring the shipped composer geometry: `conversation.input.dock`
-      // renders straight into the composer stack (a plain column flex with no padding),
-      // while the input card lives inside a root that pads by
-      // `--dsh-composer-side-clearance` and centers a child capped at
-      // `--dsh-composer-card-max-width`. Reproducing both keeps this strip exactly as
-      // wide as the input card instead of the full stack width.
+      // Two layers, following the shipped dock contract (see the queue dock in
+      // `ui-conversation`): `conversation.input.dock` renders straight into the
+      // composer stack, a plain column flex with no padding, so a dock entry must
+      // subtract both the side clearance and its own inset, cap itself at the card
+      // width minus that inset, and center with `margin: auto`. Without this the
+      // entry stretches to the full stack and overflows the input card.
       return h('div', {
         style: {
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
+          alignItems: 'stretch',
           boxSizing: 'border-box',
-          width: '100%',
+          width: 'calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset))',
+          maxWidth: 'calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset))',
           minWidth: 0,
-          margin: '4px 0 2px',
-          padding: '0 var(--dsh-composer-side-clearance)',
+          margin: '4px auto 2px',
+          padding: '0 var(--dsh-composer-dock-inset)',
         },
       }, [
         h('div', {
@@ -565,7 +566,6 @@ window.__ModuleLoader__.load({
             flexDirection: 'column',
             boxSizing: 'border-box',
             width: '100%',
-            maxWidth: 'var(--dsh-composer-card-max-width)',
             minWidth: 0,
             padding: '1px 8px',
             border: '1px solid var(--dsw-alias-border-l1)',

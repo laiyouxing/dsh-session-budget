@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-11-10
+
+### Fixed
+
+- Composer strip now follows the shipped dock contract exactly (the same geometry the queue dock uses): width subtracts `var(--dsh-composer-side-clearance)` twice and its own `var(--dsh-composer-dock-inset)`, `max-width` caps at `var(--dsh-composer-card-max-width)` minus that inset, and `margin: … auto` centers it — so the strip lines up with the input card instead of overflowing it. This supersedes the 1.5.1 attempt, which reproduced the input card's own padding but not the dock inset.
+
 ## [1.5.1] - 2026-11-10
 
 ### Fixed
