@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-11-10
+
+### Added
+
+- Automatic sync of the inputs the schedule needs, from the Settings page:
+  - "Fetch DeepSeek pricing" reads the official price table (`/zh-cn/...` for a `CNY` budget, the English page for `USD`), picks the `pricingModel` column and the `pricingPeriod` (peak or off-peak), and fills the four per-million prices. Cache writes are charged at the cache-miss input price.
+  - "Sync holiday calendar" reads the public holiday-cn calendar (timor.tech as fallback) and treats the legal holidays as off-peak days without overwriting hand-written `peakSkipDates` entries.
+  - New fields `autoSync`, `syncIntervalHours`, `pricingModel`, `pricingPeriod`, `holidayAutoSkip`. A sync runs on start and then every `syncIntervalHours` (minimum 1 hour) while `autoSync` is on; a failed fetch keeps the last good result and reports the error on the page.
+- `GET /session-budget/sync` returns the last sync state, `POST /session-budget/sync` takes `{pricing:true}`, `{holidays:true}` or `{all:true}`.
+
+### Changed
+
+- The store payload is now `version: 4` (`sessions`, `peak`, `paused`, `config`, `sync`); files written by earlier versions load unchanged.
+- The plugin now contacts the network, but only for the two documented sources and only when a sync runs.
+
 ## [1.5.3] - 2026-11-10
 
 ### Fixed

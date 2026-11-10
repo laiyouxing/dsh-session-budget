@@ -94,10 +94,19 @@ Defaults follow [DeepSeek's published pricing hours](https://api-docs.deepseek.c
 | `peakWindows` | `09:00-12:00,14:00-18:00` | `HH:MM-HH:MM`, comma separated; a window that crosses midnight is supported |
 | `peakTimezone` | `Asia/Shanghai` | IANA zone used to evaluate the windows |
 | `peakWeekdays` | `mon-fri` | `mon-fri`, `mon,wed,fri`, `周一-周五`, `daily` … empty means every day |
-| `peakSkipDates` | *(empty)* | `YYYY-MM-DD` list treated as off-peak all day (plugin does not fetch holiday calendars — list them here) |
+| `peakSkipDates` | *(empty)* | `YYYY-MM-DD` list treated as off-peak all day; the synced holiday calendar joins it automatically |
 | `peakAutoResume` | `true` | Plugin default for new sessions; `/budget peak off` opts one session out |
 
 During a peak window the session is paused and its running turn cancelled. When the valley begins the goal is resumed, unless it is complete, already active, or blocked for a reason this plugin does not own.
+
+## Automatic sync of prices and holidays
+
+The settings page can fetch both inputs instead of asking you to type them:
+
+- **DeepSeek pricing** — reads the official price table (`/zh-cn/…` for a `CNY` budget, the English page for `USD`), picks the `pricingModel` column (`deepseek-flash` or `deepseek-v4-pro`) and the `pricingPeriod` (`peak` is conservative, `offpeak` matches real off-peak spending), then writes the four per-million prices into the settings layer. Cache writes are charged at the cache-miss input price.
+- **Holiday calendar** — reads the public [holiday-cn](https://github.com/NateScarlet/holiday-cn) calendar (falling back to `timor.tech`), and adds the legal holidays to the days treated as off-peak. Hand-written `peakSkipDates` entries are kept.
+
+Both run when the plugin starts and then every `syncIntervalHours` while `autoSync` is on; a failed fetch keeps the previous values and shows the error on the page. The two buttons fetch immediately.
 
 ## Settings reference
 
@@ -107,20 +116,25 @@ During a peak window the session is paused and its running turn cancelled. When 
 | `defaultTokens` | `0` | New-session token limit (`0` = off) |
 | `defaultMoney` | `0` | New-session money limit (`0` = off) |
 | `defaultMinutes` | `0` | New-session wall-clock limit in minutes (`0` = off) |
-| `priceInputPerMillion` | `0` | Price per 1M uncached input tokens |
+| `priceInputPerMillion` | `0` | Price per 1M uncached input tokens (filled by the pricing sync) |
 | `priceCacheReadPerMillion` | `0` | Price per 1M cache-read tokens |
 | `priceCacheWritePerMillion` | `0` | Price per 1M cache-write tokens |
 | `priceOutputPerMillion` | `0` | Price per 1M output tokens |
-| `currency` | `CNY` | Label used in the strip, status text, and alerts |
+| `currency` | `CNY` | Label used in the strip, status text, and alerts; also selects the pricing page |
 | `onExceed` | `block` | `block` blocks the goal, `pause` pauses it (both disarm auto-continuation) |
+| `autoSync` | `true` | Fetch prices and holidays on start and on the interval below |
+| `syncIntervalHours` | `24` | Minimum 1; manual buttons ignore it |
+| `pricingModel` | `deepseek-flash` | Which price column the pricing sync adopts |
+| `pricingPeriod` | `peak` | `peak` over-estimates cost on purpose; `offpeak` matches off-peak spending |
+| `holidayAutoSkip` | `true` | Treat the synced legal holidays as off-peak days |
 | `checkIntervalMs` | `5000` | Tick for time limits and the peak sweep (minimum 1000) |
 | `dataFile` | *(empty)* | Override the store path; empty means `~/.dsh/session-budget/budgets.json` |
 
 ## Data and privacy
 
-- Store: `~/.dsh/session-budget/budgets.json` (`{ version: 3, sessions, peak, paused, config }`), written atomically (temp file + rename) with a short debounce.
-- The plugin never contacts the network. The peak calculation is local time arithmetic.
-- HTTP surface, same-origin only: `GET /session-budget/status?session=…`, `POST /session-budget/update`, `GET /session-budget/config`, `POST /session-budget/config`.
+- Store: `~/.dsh/session-budget/budgets.json` (`{ version: 4, sessions, peak, paused, config, sync }`), written atomically (temp file + rename) with a short debounce.
+- The plugin only contacts the network for the two documented sources (the DeepSeek pricing docs page and a public holiday calendar), and only when a sync runs. The peak calculation itself is local time arithmetic.
+- HTTP surface, same-origin only: `GET /session-budget/status?session=…`, `POST /session-budget/update`, `GET /session-budget/config`, `POST /session-budget/config`, `GET /session-budget/sync`, `POST /session-budget/sync` (`{pricing:true}` / `{holidays:true}` / `{all:true}`).
 
 ## Development
 
@@ -171,6 +185,7 @@ Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Bug repor
 - **峰谷感知**：默认就是 DeepSeek 官方时段（北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时，周末与节假日全天谷时）。峰时暂停并取消当前步，进入谷时自动恢复。
 - **补算历史用量**：会话中途设置预算，会把该会话日志里已有的用量折算进来，上限覆盖整场会话而不是只算设置之后。
 - **三个入口**：输入框上方的单行预算条、`/budget` 命令、完整设置页（设置 → 会话用量预算，插件页里也有）。
+- **自动同步**：设置页可一键查询 DeepSeek 官方定价（按币种选中文/英文页，可选 `deepseek-flash` / `deepseek-v4-pro` 与峰时/谷时价格），并同步公开的法定节假日日历；默认开启，每 24 小时自动刷新一次，失败时保留上次结果。
 
 ### 安装
 
@@ -186,7 +201,7 @@ DSH 桌面版请在应用内的插件管理里添加 `github:laiyouxing/dsh-sess
 
 ### 峰谷
 
-默认已经按 DeepSeek 官方峰谷设置好：`peakWindows = 09:00-12:00,14:00-18:00`、`peakTimezone = Asia/Shanghai`、`peakWeekdays = mon-fri`、`peakSkipDates` 留空。插件不联网抓节假日表，法定假日请自行写进 `peakSkipDates`（`YYYY-MM-DD`，逗号分隔）。
+默认已经按 DeepSeek 官方峰谷设置好：`peakWindows = 09:00-12:00,14:00-18:00`、`peakTimezone = Asia/Shanghai`、`peakWeekdays = mon-fri`、`peakSkipDates` 留空。设置页「自动同步」里的「同步节假日日历」会把公开法定节假日自动加进来（`holidayAutoSkip` 打开时生效，手填的 `peakSkipDates` 仍然保留）；也可以手动写 `peakSkipDates`（`YYYY-MM-DD`，逗号分隔）。
 
 ### 命令
 
@@ -194,4 +209,4 @@ DSH 桌面版请在应用内的插件管理里添加 `github:laiyouxing/dsh-sess
 
 ### 数据
 
-只写本地 `~/.dsh/session-budget/budgets.json`，不联网、无遥测。
+只写本地 `~/.dsh/session-budget/budgets.json`（`{ version: 4, sessions, peak, paused, config, sync }`），无遥测。联网只发生在你点了「查询定价 / 同步节假日」或自动同步到点时，目标是 DeepSeek 官方文档页与公开节假日日历；抓取结果缓存在同一个文件里。

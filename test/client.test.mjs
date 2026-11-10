@@ -228,6 +228,30 @@ const configPayload = {
     todayOutsideWeekdays: false,
   },
   storeFile: 'C:/Users/youxi/.dsh/session-budget/budgets.json',
+  sync: {
+    autoSync: true,
+    intervalHours: 24,
+    currency: 'CNY',
+    pricingModel: 'deepseek-flash',
+    pricingPeriod: 'offpeak',
+    holidayAutoSkip: true,
+    pricing: {
+      at: Date.UTC(2026, 10, 10, 2, 0, 0),
+      currency: 'CNY',
+      model: 'deepseek-flash',
+      period: 'offpeak',
+      prices: { priceInputPerMillion: 1, priceCacheReadPerMillion: 0.02, priceOutputPerMillion: 4 },
+      models: ['deepseek-flash', 'deepseek-v4-pro'],
+      source: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
+    },
+    holidays: {
+      at: Date.UTC(2026, 10, 10, 2, 0, 0),
+      years: [2026, 2027],
+      count: 3,
+      dates: ['2026-01-01', '2026-01-02', '2026-02-15'],
+      source: 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/2026.json',
+    },
+  },
 }
 // `adopt()` fills the drafts from the payload after the GET; mirror that state
 // here because the stub useEffect never runs.
@@ -257,5 +281,14 @@ assert(checkbox4.length === 1 && checkbox4[0].props.checked === true, 'boolean f
 const peakInput = find(tree4, (node) => node.props?.value === '09:00-12:00,14:00-18:00')
 assert(peakInput.length === 1, 'text fields render the current value')
 assert(peakInput[0].props.placeholder === undefined, 'settings fields keep samples out of placeholders')
+assert(texts4.includes('自动同步'), 'settings page renders the sync group')
+assert(texts4.includes('查询 DeepSeek 定价'), 'settings page offers a pricing sync action')
+assert(texts4.includes('同步节假日日历'), 'settings page offers a holiday sync action')
+assert(texts4.some((text) => text.includes('deepseek-flash') && text.includes('谷时价格')), 'sync line names the priced model and period')
+assert(texts4.some((text) => text.includes('节假日 3 天')), 'sync line reports the synced holiday count')
+assert(texts4.some((text) => text.includes('每百万 token')), 'sync line labels the per-million prices')
+const syncButtons = find(tree4, (node) => node.props?.type === 'button' && typeof node.children?.[0] === 'string'
+  && (node.children[0] === '查询 DeepSeek 定价' || node.children[0] === '同步节假日日历'))
+assert(syncButtons.length === 2, 'both sync actions are buttons')
 
 console.log(failures === 0 ? 'RESULT: PASSED' : `RESULT: FAILED (${failures})`)

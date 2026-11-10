@@ -66,7 +66,19 @@ window.__ModuleLoader__.load({
       'settings.group.budget': 'Default limits for new sessions',
       'settings.group.pricing': 'Token prices',
       'settings.group.peak': 'Peak and valley hours',
+      'settings.group.sync': 'Automatic sync',
       'settings.group.advanced': 'Advanced',
+      'settings.sync.title': 'Fetch pricing and holidays automatically',
+      'settings.sync.hint': 'Reads the official DeepSeek price table and a public holiday calendar, then fills in the token prices and treats legal holidays as valley days. Hand-written dates are kept.',
+      'settings.sync.pricing': 'Fetch DeepSeek pricing',
+      'settings.sync.holidays': 'Sync holiday calendar',
+      'settings.sync.busy': 'Fetching…',
+      'settings.sync.none': 'Not synced yet',
+      'settings.sync.pricingDone': 'Prices: {model} · {period} · input {input} · output {output} per 1M tokens · {time}',
+      'settings.sync.holidaysDone': '{count} holiday days for {years} · {time}',
+      'settings.sync.failed': 'Sync failed: {error}',
+      'settings.sync.periodPeak': 'peak price',
+      'settings.sync.periodOffpeak': 'off-peak price',
     }
     const zh = {
       'meta.title': '会话用量预算',
@@ -112,7 +124,19 @@ window.__ModuleLoader__.load({
       'settings.group.budget': '新会话的默认上限',
       'settings.group.pricing': 'token 单价',
       'settings.group.peak': '峰时与谷时',
+      'settings.group.sync': '自动同步',
       'settings.group.advanced': '高级',
+      'settings.sync.title': '自动查询定价与节假日',
+      'settings.sync.hint': '从 DeepSeek 官方定价页读取 token 单价，从公开日历读取法定节假日并按谷时处理；手填的跳过日期会保留。',
+      'settings.sync.pricing': '查询 DeepSeek 定价',
+      'settings.sync.holidays': '同步节假日日历',
+      'settings.sync.busy': '查询中…',
+      'settings.sync.none': '还没有同步过',
+      'settings.sync.pricingDone': '定价：{model} · {period} · 输入 {input} · 输出 {output}（每百万 token）· {time}',
+      'settings.sync.holidaysDone': '节假日 {count} 天（{years}）· {time}',
+      'settings.sync.failed': '同步失败：{error}',
+      'settings.sync.periodPeak': '峰时价格',
+      'settings.sync.periodOffpeak': '谷时价格',
     }
     /** Every other locale falls back to English until a translation arrives. */
     const dictionaries = { en, zh, ja: en, es: en, fr: en, de: en, ru: en, pt: en }
@@ -625,7 +649,7 @@ window.__ModuleLoader__.load({
       background: 'var(--dsw-alias-bg-layer-1)',
       padding: '0 14px',
     }
-    const GROUP_ORDER = ['general', 'budget', 'pricing', 'peak', 'advanced']
+    const GROUP_ORDER = ['general', 'budget', 'pricing', 'peak', 'sync', 'advanced']
 
     /** One settings row: title and description on the left, control on the right. */
     function SettingsRow(props) {
@@ -764,8 +788,104 @@ window.__ModuleLoader__.load({
         void post({ reset: true })
       }
 
+      /** Ask the host to fetch pricing / holidays and adopt whatever came back. */
+      const runSync = async (kinds) => {
+        setBusy(true)
+        setError('')
+        setStatus('')
+        try {
+          const response = await fetch(`${ENDPOINT}/sync`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify(kinds),
+          })
+          const next = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(typeof next.error === 'string' ? next.error : `HTTP ${response.status}`)
+          adopt(next)
+          const failures = []
+          for (const kind of ['pricing', 'holidays']) {
+            const outcome = next.result?.[kind]
+            if (typeof outcome === 'string' && outcome !== 'ok') failures.push(outcome)
+          }
+          if (failures.length > 0) setError(t('settings.sync.failed').replace('{error}', failures.join('; ')))
+          else setStatus(t('settings.saved'))
+        } catch (failure) {
+          setError(String(failure?.message ?? failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+
       const fields = payload?.fields ?? []
       const peak = payload?.peak
+      const sync = payload?.sync
+      const currency = typeof sync?.currency === 'string' ? sync.currency : 'CNY'
+      const money = (value) => (currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : `${currency} `)
+        + (Number(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 4 })
+      const when = (at) => (Number.isFinite(at) ? new Date(at).toLocaleString() : t('settings.sync.none'))
+      const periodText = (period) => (period === 'offpeak' ? t('settings.sync.periodOffpeak') : t('settings.sync.periodPeak'))
+      const syncLines = []
+      if (sync?.pricing) {
+        syncLines.push(t('settings.sync.pricingDone')
+          .replace('{model}', String(sync.pricing.model ?? ''))
+          .replace('{period}', periodText(sync.pricing.period))
+          .replace('{input}', money(sync.pricing.prices?.priceInputPerMillion))
+          .replace('{output}', money(sync.pricing.prices?.priceOutputPerMillion))
+          .replace('{time}', when(sync.pricing.at)))
+      }
+      if (sync?.holidays) {
+        syncLines.push(t('settings.sync.holidaysDone')
+          .replace('{count}', String(sync.holidays.count ?? 0))
+          .replace('{years}', Array.isArray(sync.holidays.years) ? sync.holidays.years.join(', ') : '')
+          .replace('{time}', when(sync.holidays.at)))
+      }
+      if (syncLines.length === 0) syncLines.push(t('settings.sync.none'))
+      const syncButtonStyle = {
+        border: '1px solid var(--dsw-alias-border-l1)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-primary)',
+        borderRadius: 7,
+        padding: '5px 12px',
+        fontSize: 12,
+        cursor: busy ? 'default' : 'pointer',
+      }
+      const syncCard = h('section', { key: 'sync-card', style: settingsSectionStyle }, [
+        h('div', {
+          key: 'title',
+          style: { padding: '10px 0 2px', fontSize: 12, fontWeight: 600, color: 'var(--dsw-alias-label-secondary)' },
+        }, t('settings.group.sync')),
+        h('div', {
+          key: 'hint',
+          style: { fontSize: 11, lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)', paddingBottom: 6 },
+        }, t('settings.sync.hint')),
+        h('div', {
+          key: 'lines',
+          style: { display: 'flex', flexDirection: 'column', gap: 3, paddingBottom: 8 },
+        }, syncLines.map((line, index) => h('div', {
+          key: `line-${index}`,
+          style: { fontSize: 11, lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)' },
+        }, line))),
+        h('div', {
+          key: 'actions',
+          style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', paddingBottom: 10 },
+        }, [
+          h('button', {
+            key: 'pricing',
+            type: 'button',
+            disabled: busy,
+            onClick: () => void runSync({ pricing: true, holidays: false }),
+            style: syncButtonStyle,
+          }, busy ? t('settings.sync.busy') : t('settings.sync.pricing')),
+          h('button', {
+            key: 'holidays',
+            type: 'button',
+            disabled: busy,
+            onClick: () => void runSync({ pricing: false, holidays: true }),
+            style: syncButtonStyle,
+          }, busy ? t('settings.sync.busy') : t('settings.sync.holidays')),
+        ]),
+      ])
       let peakLine = t('settings.peakOff')
       if (peak?.configured === true) {
         peakLine = peak.active === true
@@ -829,6 +949,7 @@ window.__ModuleLoader__.load({
             }),
             h('span', { key: 'text' }, peakLine),
           ]),
+          syncCard,
           ...sections,
           h('div', {
             key: 'actions',

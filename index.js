@@ -166,6 +166,54 @@ const CONFIG_FIELDS = [
     description: '新会话的默认值；单个会话可以用 /budget peak off 覆盖。',
   },
   {
+    key: 'autoSync',
+    group: 'sync',
+    kind: 'boolean',
+    value: true,
+    label: '自动同步定价与节假日',
+    description: '开启后按下面的间隔自动查询 DeepSeek 官方定价和公开节假日日历；失败时保留上一次成功的结果。',
+  },
+  {
+    key: 'syncIntervalHours',
+    group: 'sync',
+    kind: 'number',
+    value: 24,
+    label: '同步间隔（小时）',
+    description: '自动同步的间隔，最小 1 小时；也可以在下方按钮手动立即查询。',
+  },
+  {
+    key: 'pricingModel',
+    group: 'sync',
+    kind: 'string',
+    value: 'deepseek-flash',
+    label: '定价模型',
+    description: '从官方定价页取哪个模型的价格列；页面上有 deepseek-flash 与 deepseek-v4-pro 两列。',
+    options: [
+      { value: 'deepseek-flash', label: 'deepseek-flash' },
+      { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro' },
+    ],
+  },
+  {
+    key: 'pricingPeriod',
+    group: 'sync',
+    kind: 'string',
+    value: 'peak',
+    label: '按峰时还是谷时价格折算',
+    description: '峰时价格是谷时的两倍；选 peak 更保守（预算不会被低估），选 offpeak 更接近实际花费。',
+    options: [
+      { value: 'peak', label: '峰时价格（保守）' },
+      { value: 'offpeak', label: '谷时价格（实际）' },
+    ],
+  },
+  {
+    key: 'holidayAutoSkip',
+    group: 'sync',
+    kind: 'boolean',
+    value: true,
+    label: '自动把法定节假日按谷时处理',
+    description: '同步到的节假日日期会和“跳过的日期”一起生效（手填的日期仍然保留），法定节假日全天按谷时处理。',
+  },
+  {
     key: 'checkIntervalMs',
     group: 'advanced',
     kind: 'number',
@@ -288,6 +336,8 @@ class BudgetStore {
     this.paused = new Map()
     /** Settings-page overrides: field key -> validated value. */
     this.config = {}
+    /** Last successful automatic syncs: `{ pricing, holidays }`. */
+    this.sync = {}
     this.chain = Promise.resolve()
     this.pending = undefined
     this.load()
@@ -315,6 +365,13 @@ class BudgetStore {
         if (field === undefined || !isEditable(field)) continue
         const coerced = coerceConfigValue(field, value)
         if (coerced !== undefined) this.config[key] = coerced
+      }
+      const sync = parsed?.sync
+      if (sync !== null && typeof sync === 'object') {
+        for (const kind of ['pricing', 'holidays']) {
+          const entry = sync[kind]
+          if (entry !== null && typeof entry === 'object') this.sync[kind] = entry
+        }
       }
     } catch (error) {
       this.log?.warn?.(`session-budget: could not read ${this.file}: ${error instanceof Error ? error.message : String(error)}`)
@@ -401,6 +458,23 @@ class BudgetStore {
     this.saveSoon()
   }
 
+  /** Last successful sync of one kind (`pricing` or `holidays`), as a detached copy. */
+  syncOf(kind) {
+    const entry = this.sync[kind]
+    return entry === null || entry === undefined ? undefined : JSON.parse(JSON.stringify(entry))
+  }
+
+  /** Record the outcome of one sync attempt; `undefined` clears the entry. */
+  setSync(kind, entry) {
+    if (entry === undefined) {
+      if (this.sync[kind] === undefined) return
+      delete this.sync[kind]
+    } else {
+      this.sync[kind] = JSON.parse(JSON.stringify(entry))
+    }
+    this.saveSoon()
+  }
+
   saveSoon() {
     if (this.pending !== undefined) return
     this.pending = setTimeout(() => {
@@ -412,11 +486,12 @@ class BudgetStore {
 
   save() {
     const payload = {
-      version: 3,
+      version: 4,
       sessions: Object.fromEntries(this.records),
       peak: Object.fromEntries(this.peak),
       paused: Object.fromEntries(this.paused),
       config: { ...this.config },
+      sync: { ...this.sync },
     }
     const write = async () => {
       try {
@@ -565,6 +640,170 @@ function parseSkipDates(text) {
     dates.add(`${match[1]}-${match[2]}-${match[3]}`)
   }
   return dates
+}
+
+/**
+ * Official DeepSeek pricing pages, one per currency.
+ *
+ * The Chinese page lists CNY prices and the English page lists USD prices for the
+ * same table, so the configured `currency` decides which page is authoritative.
+ */
+const PRICING_PAGES = {
+  CNY: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing',
+  USD: 'https://api-docs.deepseek.com/quick_start/pricing',
+}
+
+/** Public holiday calendars, in the order they are tried. */
+const holidaySources = (year) => [
+  { url: `https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/${year}.json`, format: 'holiday-cn' },
+  { url: `https://timor.tech/api/holiday/year/${year}`, format: 'timor' },
+]
+
+/** Fetch one URL as text with a timeout; throws on a non-2xx answer. */
+async function fetchText(url, timeoutMs = 15000) {
+  if (typeof fetch !== 'function') throw new Error('当前运行环境没有 fetch，无法自动查询')
+  const controller = typeof AbortController === 'function' ? new AbortController() : undefined
+  const timer = controller === undefined ? undefined : setTimeout(() => controller.abort(), timeoutMs)
+  timer?.unref?.()
+  try {
+    const response = await fetch(url, {
+      signal: controller?.signal,
+      headers: { accept: 'text/html,application/json;q=0.9,*/*;q=0.8' },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return await response.text()
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** Strip a docs page down to the single line of text its pricing table renders as. */
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Parse the pricing table of a DeepSeek docs page.
+ *
+ * Returns `{ currency, models: [{ name, cacheHit, cacheMiss, output }] }` where
+ * each metric carries `{ offpeak, peak }` prices per million tokens. The table
+ * lists the same three rows for every model column, so a row's first half is the
+ * off-peak prices and its second half the peak prices, one number per model.
+ */
+function parsePricingPage(html, currency) {
+  const text = htmlToText(html)
+  const modelMatches = [...text.matchAll(/deepseek-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*/g)].map((match) => match[0])
+  const models = []
+  for (const name of modelMatches) {
+    if (models.length >= 2) break
+    if (!models.includes(name)) models.push(name)
+  }
+  if (models.length === 0) throw new Error('定价页里没有找到模型列')
+  const normalized = text.toUpperCase()
+  const rowLabels = [
+    { metric: 'cacheHit', zh: '缓存命中', en: 'CACHE HIT' },
+    { metric: 'cacheMiss', zh: '缓存未命中', en: 'CACHE MISS' },
+    { metric: 'output', zh: '输出', en: 'OUTPUT' },
+  ]
+  const rows = []
+  for (const label of rowLabels) {
+    let at = text.lastIndexOf(label.zh)
+    if (at < 0) at = normalized.lastIndexOf(label.en)
+    if (at < 0) throw new Error(`定价页里没有找到“${label.zh}”价格行`)
+    rows.push({ metric: label.metric, at, label: text.slice(at, at + label.zh.length || at + label.en.length) })
+  }
+  rows.sort((left, right) => left.at - right.at)
+  const result = models.map((name) => ({ name, cacheHit: {}, cacheMiss: {}, output: {} }))
+  for (let index = 0; index < rows.length; index += 1) {
+    const current = rows[index]
+    const next = rows[index + 1]
+    const chunk = text.slice(current.at, next === undefined ? text.length : next.at)
+    const numbers = [...chunk.matchAll(/(\d+(?:\.\d+)?)/g)]
+      .map((match) => Number(match[1]))
+      .filter((value) => Number.isFinite(value))
+    if (numbers.length < models.length * 2) {
+      throw new Error(`定价页“${current.metric}”的价格数字不够（解析到 ${numbers.length} 个）`)
+    }
+    for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+      result[modelIndex][current.metric] = {
+        offpeak: numbers[modelIndex],
+        peak: numbers[modelIndex + models.length],
+      }
+    }
+  }
+  return { currency, models: result }
+}
+
+/**
+ * The four per-million prices the budget maths needs, taken from one model column.
+ *
+ * Cache writes are charged at the cache-miss input price (DeepSeek does not bill a
+ * separate cache-write rate on this table), so the table stays four columns wide.
+ */
+function pickPrices(pricing, model, period) {
+  const wanted = typeof model === 'string' && model !== '' ? model : 'deepseek-flash'
+  const chosen = pricing.models.find((entry) => entry.name === wanted) ?? pricing.models[0]
+  if (chosen === undefined) throw new Error('定价表里没有可用的模型列')
+  const offset = period === 'offpeak' ? 'offpeak' : 'peak'
+  const input = chosen.cacheMiss[offset]
+  const cacheRead = chosen.cacheHit[offset]
+  const output = chosen.output[offset]
+  if (!Number.isFinite(input) || !Number.isFinite(cacheRead) || !Number.isFinite(output)) {
+    throw new Error(`定价表缺少 ${chosen.name} 的价格`)
+  }
+  return {
+    priceInputPerMillion: input,
+    priceCacheReadPerMillion: cacheRead,
+    priceCacheWritePerMillion: input,
+    priceOutputPerMillion: output,
+  }
+}
+
+/** Normalize a holiday calendar (holiday-cn JSON or timor.tech JSON) to off-day dates. */
+function parseHolidayCalendar(payload, year) {
+  const dates = []
+  const names = {}
+  let sourceYear = Number(year)
+  let parsed
+  try {
+    parsed = typeof payload === 'string' ? JSON.parse(payload) : payload
+  } catch (error) {
+    throw new Error('节假日日历不是有效的 JSON')
+  }
+  if (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.days)) {
+    if (Number.isFinite(Number(parsed.year))) sourceYear = Number(parsed.year)
+    for (const day of parsed.days) {
+      if (day?.isOffDay !== true) continue
+      const date = typeof day.date === 'string' ? day.date : ''
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || dates.includes(date)) continue
+      dates.push(date)
+      if (typeof day.name === 'string') names[date] = day.name
+    }
+    return { year: sourceYear, dates, names, source: 'holiday-cn' }
+  }
+  const holidays = parsed?.holiday
+  if (holidays !== null && typeof holidays === 'object') {
+    for (const [key, entry] of Object.entries(holidays)) {
+      if (entry?.holiday !== true) continue
+      const date = typeof entry?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date)
+        ? entry.date
+        : `${sourceYear}-${key}`
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || dates.includes(date)) continue
+      dates.push(date)
+      if (typeof entry?.name === 'string') names[date] = entry.name
+    }
+    return { year: sourceYear, dates, names, source: 'timor' }
+  }
+  throw new Error('节假日日历格式无法识别')
 }
 
 /**
@@ -723,7 +962,22 @@ export function apply(ctx, rawConfig) {
   const peakWindowsOf = () => parsePeakWindows(config.peakWindows)
   const peakZone = () => (typeof config.peakTimezone === 'string' ? config.peakTimezone.trim() : '')
   const peakWeekdaysOf = () => parseWeekdays(config.peakWeekdays)
-  const peakSkipDatesOf = () => parseSkipDates(config.peakSkipDates)
+  /**
+   * Days that run as valley regardless of the schedule.
+   *
+   * The hand-written dates always apply; the synced public holidays join them when
+   * `holidayAutoSkip` is on, which keeps a stale calendar from overriding the user.
+   */
+  const peakSkipDatesOf = () => {
+    const dates = parseSkipDates(config.peakSkipDates)
+    if (config.holidayAutoSkip !== false) {
+      const synced = store.syncOf('holidays')
+      for (const date of synced?.dates ?? []) {
+        if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) dates.add(date)
+      }
+    }
+    return dates
+  }
   /** Whether this session follows the peak schedule (per-session preference, then config). */
   const peakFollowed = (sessionId) => {
     const preference = sessionId === undefined ? undefined : store.peakOf(sessionId)
@@ -734,6 +988,163 @@ export function apply(ctx, rawConfig) {
     weekdays: peakWeekdaysOf(),
     skipDates: peakSkipDatesOf(),
   })
+
+  // ------------------------------------------------ automatic pricing / holidays
+
+  const errorText = (error) => (error instanceof Error ? error.message : String(error))
+
+  const syncIntervalMs = () => Math.max(1, Number(config.syncIntervalHours) || 24) * 3600000
+
+  /** Fetch the official price table and adopt the four per-million prices. */
+  const syncPricingNow = async () => {
+    const currency = (typeof config.currency === 'string' && config.currency.trim() !== '' ? config.currency : 'CNY').trim().toUpperCase()
+    const key = currency === 'CNY' ? 'CNY' : 'USD'
+    const url = PRICING_PAGES[key]
+    const html = await fetchText(url)
+    const parsed = parsePricingPage(html, key)
+    const prices = pickPrices(parsed, config.pricingModel, config.pricingPeriod)
+    const wanted = parsed.models.find((entry) => entry.name === config.pricingModel) ?? parsed.models[0]
+    const entry = {
+      at: Date.now(),
+      currency: key,
+      model: wanted.name,
+      period: config.pricingPeriod === 'offpeak' ? 'offpeak' : 'peak',
+      prices: { ...prices },
+      models: parsed.models.map((model) => model.name),
+      source: url,
+    }
+    store.setConfig(prices)
+    store.setSync('pricing', entry)
+    reloadConfig()
+    warnPrices()
+    log?.info?.(`session-budget: prices synced from ${url} (${entry.model} · ${entry.period})`)
+    return entry
+  }
+
+  /** Fetch the public holiday calendars for this year and the next one. */
+  const syncHolidaysNow = async () => {
+    const year = Number(localParts(new Date(), peakZone()).dateKey.slice(0, 4))
+    const years = Number.isFinite(year) ? [year, year + 1] : [new Date().getFullYear()]
+    const dates = new Set()
+    const names = {}
+    const failures = []
+    let source = ''
+    for (const targetYear of years) {
+      let done = false
+      for (const candidate of holidaySources(targetYear)) {
+        try {
+          const text = await fetchText(candidate.url)
+          const parsed = parseHolidayCalendar(text, targetYear)
+          for (const date of parsed.dates) dates.add(date)
+          Object.assign(names, parsed.names)
+          source = candidate.url
+          done = true
+          break
+        } catch (error) {
+          failures.push(`${candidate.url}: ${errorText(error)}`)
+        }
+      }
+      if (!done) log?.warn?.(`session-budget: no holiday calendar for ${targetYear}: ${failures.join('; ')}`)
+    }
+    if (dates.size === 0) throw new Error(failures.join('; ') || '没有取到节假日数据')
+    const entry = { at: Date.now(), years, dates: [...dates].sort(), names, source }
+    store.setSync('holidays', entry)
+    log?.info?.(`session-budget: ${entry.dates.length} holiday days synced for ${years.join(', ')}`)
+    return entry
+  }
+
+  /**
+   * Run the requested syncs, keeping the last good result when one fails.
+   *
+   * A failing network must never break enforcement, so failures are reported back
+   * to the settings page instead of being thrown at the caller.
+   */
+  const syncAll = async (kinds = {}) => {
+    const result = {}
+    if (kinds.pricing !== false) {
+      try {
+        await syncPricingNow()
+        result.pricing = 'ok'
+      } catch (error) {
+        result.pricing = errorText(error)
+        log?.warn?.(`session-budget: pricing sync failed: ${result.pricing}`)
+      }
+    }
+    if (kinds.holidays !== false) {
+      try {
+        await syncHolidaysNow()
+        result.holidays = 'ok'
+      } catch (error) {
+        result.holidays = errorText(error)
+        log?.warn?.(`session-budget: holiday sync failed: ${result.holidays}`)
+      }
+    }
+    try {
+      sweep()
+    } catch (error) {
+      // best effort: a broken sweep must not fail the sync response
+    }
+    return result
+  }
+
+  /** Whether the stored sync results are older than the configured interval. */
+  const syncDue = () => {
+    const interval = syncIntervalMs()
+    const stale = (entry) => entry === undefined || !Number.isFinite(entry.at) || Date.now() - entry.at >= interval
+    return stale(store.syncOf('pricing')) || stale(store.syncOf('holidays'))
+  }
+
+  ctx.effect(() => {
+    const run = () => {
+      if (!config.enabled || config.autoSync === false) return
+      if (!syncDue()) return
+      void syncAll({}).catch(() => {
+        // reported through the returned result of the manual path
+      })
+    }
+    const kick = setTimeout(run, 2500)
+    kick.unref?.()
+    const timer = setInterval(run, Math.min(syncIntervalMs(), 3600000))
+    timer.unref?.()
+    return () => {
+      clearTimeout(kick)
+      clearInterval(timer)
+    }
+  }, 'session-budget.sync')
+
+  /** Sync state for the settings page. */
+  const syncSummary = () => {
+    const pricing = store.syncOf('pricing')
+    const holidays = store.syncOf('holidays')
+    return {
+      autoSync: config.autoSync !== false,
+      intervalHours: Math.max(1, Number(config.syncIntervalHours) || 24),
+      currency: typeof config.currency === 'string' ? config.currency.trim().toUpperCase() : 'CNY',
+      pricingModel: typeof config.pricingModel === 'string' ? config.pricingModel.trim() : '',
+      pricingPeriod: config.pricingPeriod === 'offpeak' ? 'offpeak' : 'peak',
+      holidayAutoSkip: config.holidayAutoSkip !== false,
+      pricing: pricing === undefined
+        ? null
+        : {
+          at: pricing.at,
+          currency: pricing.currency,
+          model: pricing.model,
+          period: pricing.period,
+          prices: pricing.prices,
+          models: pricing.models ?? [],
+          source: pricing.source,
+        },
+      holidays: holidays === undefined
+        ? null
+        : {
+          at: holidays.at,
+          years: holidays.years ?? [],
+          count: Array.isArray(holidays.dates) ? holidays.dates.length : 0,
+          dates: Array.isArray(holidays.dates) ? holidays.dates.slice(0, 60) : [],
+          source: holidays.source,
+        },
+    }
+  }
 
   /** Pause the goal and cancel a running turn when a peak window is active. */
   function peakStop(sessionId, agent, state) {
@@ -1092,12 +1503,16 @@ export function apply(ctx, rawConfig) {
     const state = windows.length === 0
       ? { active: false, minutesLeft: null, skipped: false, weekdayOff: false, dateKey: '' }
       : peakNow()
+    const holidays = store.syncOf('holidays')
     return {
       configured: windows.length > 0,
       windows: typeof config.peakWindows === 'string' ? config.peakWindows.trim() : '',
       timezone: peakZone(),
       weekdays: typeof config.peakWeekdays === 'string' ? config.peakWeekdays.trim() : '',
       skipDates: typeof config.peakSkipDates === 'string' ? config.peakSkipDates.trim() : '',
+      holidayAutoSkip: config.holidayAutoSkip !== false,
+      holidayCount: Array.isArray(holidays?.dates) ? holidays.dates.length : 0,
+      holidaySyncedAt: Number.isFinite(holidays?.at) ? holidays.at : null,
       today: state.dateKey,
       todaySkipped: state.skipped === true,
       todayOutsideWeekdays: state.weekdayOff === true,
@@ -1122,6 +1537,7 @@ export function apply(ctx, rawConfig) {
     })),
     overridden: Object.keys(store.configOf()),
     peak: peakSummary(),
+    sync: syncSummary(),
     storeFile: store.file,
   })
 
@@ -1401,6 +1817,21 @@ export function apply(ctx, rawConfig) {
           const result = applyConfigPatch(body?.values)
           if (result.error !== undefined) return sendJson(res, 400, { error: result.error })
           return sendJson(res, 200, configPayload())
+        }
+        if (req.method === 'GET' && action === 'sync') {
+          return sendJson(res, 200, syncSummary())
+        }
+        if (req.method === 'POST' && action === 'sync') {
+          if (!sameOrigin(req)) return sendJson(res, 403, { error: 'forbidden' })
+          const body = await readBody(req)
+          if (body?.all !== true && body?.pricing !== true && body?.holidays !== true) {
+            return sendJson(res, 400, { error: '需要指定 pricing、holidays 或 all' })
+          }
+          const kinds = body?.all === true
+            ? {}
+            : { pricing: body?.pricing === true, holidays: body?.holidays === true }
+          const result = await syncAll(kinds)
+          return sendJson(res, 200, { ...configPayload(), result })
         }
         if (req.method === 'GET' && (action === 'status' || action === '')) {
           const sessionId = url.searchParams.get('session') ?? ''
