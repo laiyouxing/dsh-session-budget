@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-budget",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Per-session token, cost, and wall-clock budgets for DeepSeek Harness that stop the model session at the limit, plus a DeepSeek peak/off-peak schedule that pauses at peak and resumes in the valley.",
   "type": "module",
   "license": "MIT",

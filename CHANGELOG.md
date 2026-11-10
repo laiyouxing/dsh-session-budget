@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-11-10
+
+### Fixed
+
+- Composer strip no longer grows wider than the input card: it now fills the composer stack and caps at `var(--dsh-composer-card-max-width)` with `box-sizing: border-box` and no horizontal margin, matching the shipped goal/queue dock contract.
+
 ## [1.5.0] - 2026-11-10
 
 First public release.

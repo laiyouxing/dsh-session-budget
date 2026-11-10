@@ -544,8 +544,14 @@ window.__ModuleLoader__.load({
         style: {
           display: 'flex',
           flexDirection: 'column',
+          boxSizing: 'border-box',
+          // Match the composer card exactly: the composer stack centers its
+          // children and caps them at this variable, so 100% + max-width lines
+          // this strip up with the input card instead of overflowing it.
+          width: '100%',
+          maxWidth: 'var(--dsh-composer-card-max-width)',
           minWidth: 0,
-          margin: '4px 12px 2px',
+          margin: '4px 0 2px',
           padding: '1px 8px',
           border: '1px solid var(--dsw-alias-border-l1)',
           borderRadius: 9,

@@ -143,6 +143,20 @@ assert(!allStyles.some((style) => style.minWidth === 132 || style.flex === '1 1 
 assert(allStyles.some((style) => style.minWidth === 0), 'flex children may shrink (minWidth 0 present)')
 const root = tree2.props.style
 assert(root.minWidth === 0, 'root clamps to slot width')
+// The composer stack centers its children and caps them at the card width; the
+// strip must follow the same contract or it grows wider than the input card.
+assert(root.width === '100%', 'root fills the composer stack width')
+assert(root.maxWidth === 'var(--dsh-composer-card-max-width)', 'root caps at the composer card width')
+assert(root.boxSizing === 'border-box', 'root counts padding inside that width')
+const marginParts = String(root.margin ?? '0').split(/\s+/)
+const horizontal = marginParts.length === 1
+  ? [marginParts[0]]
+  : marginParts.length === 2
+    ? [marginParts[1]]
+    : marginParts.length === 3
+      ? [marginParts[1]]
+      : [marginParts[1], marginParts[3]]
+assert(horizontal.every((value) => value === '0' || value === '0px'), 'root adds no horizontal margin that would overflow the card')
 assert(typeof root.border === 'string' && root.border.includes('1px solid'), 'root restores the visible frame')
 assert(typeof root.borderRadius === 'number' && root.borderRadius > 0, 'root is a rounded card')
 assert(typeof root.background === 'string' && root.background !== '', 'root paints a card surface')
