@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session budget",
+    "description": "Sets a per-session token, cost, or time limit and stops the model session when a limit is reached."
+  }
+}

@@ -1,0 +1,4 @@
+- insert:
+    - id: session-budget
+      name: dsh-session-budget
+      config: {}

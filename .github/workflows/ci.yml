@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax check
+        run: |
+          node --check index.js
+          node --check client.js
+
+      - name: Package manifest
+        run: node -e "const p=require('./package.json');const ok=p.dsh?.bundle?.patch&&p.files.includes('index.js')&&p.exports['.']&&p.exports['./client'];if(!ok){console.error('manifest is missing dsh.bundle.patch / exports / files');process.exit(1)}console.log('manifest ok')"
+
+      - name: Tests
+        run: npm test

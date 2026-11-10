@@ -1,0 +1,76 @@
+{
+  "name": "dsh-session-budget",
+  "version": "1.5.0",
+  "description": "Per-session token, cost, and wall-clock budgets for DeepSeek Harness that stop the model session at the limit, plus a DeepSeek peak/off-peak schedule that pauses at peak and resumes in the valley.",
+  "type": "module",
+  "license": "MIT",
+  "author": "laiyouxing",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laiyouxing/dsh-session-budget.git"
+  },
+  "homepage": "https://github.com/laiyouxing/dsh-session-budget#readme",
+  "bugs": {
+    "url": "https://github.com/laiyouxing/dsh-session-budget/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "budget",
+    "token-budget",
+    "cost-budget",
+    "usage",
+    "peak-hours",
+    "off-peak"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node test/run.mjs",
+    "test:host": "node test/host.test.mjs",
+    "test:client": "node test/client.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
