@@ -335,6 +335,47 @@ assert(skipView.peak.active === false, 'a skipped holiday is never peak')
 await setConfig({ peakSkipDates: '', peakWindows: '' })
 tick()
 
+// ---- a peak window that interrupts a plain turn auto-continues in the valley ----
+const follows = []
+agent.followup = (message) => { follows.push(message) }
+goal.phase = 'complete'
+agent.status = 'running'
+await command('peak on')
+await setConfig({ peakWindows: windowAroundNow(30, 30) })
+tick()
+assert(calls.cancel.at(-1)?.kind === 'hook', 'peak cancels a running turn even without an active goal')
+const interruptedView = await readRoute('GET', '/session-budget/status?session=session-1')
+assert(interruptedView.peak.paused === true, 'the interrupted session is remembered as paused')
+agent.status = 'idle'
+await setConfig({ peakWindows: '' })
+tick()
+assert(follows.length === 1, 'the valley tick re-queues exactly one auto-continue message')
+assert(follows[0]?.source?.kind === 'session-budget', 'the auto-continue message is tagged as plugin-sent')
+assert(String(follows[0]?.content?.[0]?.text ?? '').includes('继续'), 'the auto-continue message asks to continue the work')
+const clearedView = await readRoute('GET', '/session-budget/status?session=session-1')
+assert(clearedView.peak.paused === false, 'the consumed auto-continue clears the paused state')
+tick()
+assert(follows.length === 1, 'the valley does not repeat the auto-continue')
+
+agent.status = 'running'
+await setConfig({ peakWindows: windowAroundNow(30, 30) })
+tick()
+emit('session/event', [{ id: 'session-1' }, { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '继续' }] } }])
+agent.status = 'idle'
+await setConfig({ peakWindows: '' })
+tick()
+assert(follows.length === 1, 'a human message supersedes the queued auto-continue')
+
+agent.status = 'running'
+await setConfig({ peakWindows: windowAroundNow(30, 30) })
+tick()
+emit('session/event', [{ id: 'session-1' }, { type: 'turn/end', data: { reason: { kind: 'completed' } } }])
+agent.status = 'idle'
+await setConfig({ peakWindows: '' })
+tick()
+assert(follows.length === 1, 'a turn that finished on its own supersedes the queued auto-continue')
+goal.phase = 'active'
+
 // ---- settings route: the very fields the Settings page edits ----
 const initialConfig = await readRoute('GET', '/session-budget/config')
 assert(initialConfig.fields.length === 22, 'config route serves every field')
@@ -389,7 +430,8 @@ network.fail = false
 await new Promise((resolve) => setTimeout(resolve, 900))
 const persisted = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
 assert(typeof persisted.sessions === 'object', 'store file written')
-assert(persisted.version === 4, 'store file carries the v4 payload')
+assert(persisted.version === 5, 'store file carries the v5 payload')
+assert(typeof persisted.resume === 'object', 'store file keeps the pending auto-continue map')
 assert(persisted.peak?.['session-1'] === true, 'store file keeps the peak preference')
 assert(typeof persisted.sync?.pricing === 'object', 'store file keeps the last pricing sync')
 

@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name. */
@@ -31,6 +32,9 @@ const ZERO_BUCKETS = () => ({
 })
 
 const ROUTE_PREFIX = '/session-budget'
+
+/** A peak interruption older than this is stale and never auto-continued. */
+const AUTO_RESUME_MAX_AGE_MS = 12 * 60 * 60 * 1000
 
 /**
  * Every tunable in one table.
@@ -334,6 +338,8 @@ class BudgetStore {
     this.peak = new Map()
     /** Sessions whose goal this plugin paused for a peak window. */
     this.paused = new Map()
+    /** Sessions a peak window interrupted mid-turn, waiting to auto-continue in the valley. */
+    this.resume = new Map()
     /** Settings-page overrides: field key -> validated value. */
     this.config = {}
     /** Last successful automatic syncs: `{ pricing, holidays }`. */
@@ -359,6 +365,11 @@ class BudgetStore {
       }
       for (const [sessionId, paused] of Object.entries(parsed?.paused ?? {})) {
         if (paused === true) this.paused.set(sessionId, true)
+      }
+      for (const [sessionId, entry] of Object.entries(parsed?.resume ?? {})) {
+        if (entry !== null && typeof entry === 'object' && Number.isFinite(entry.at)) {
+          this.resume.set(sessionId, { at: entry.at, reason: typeof entry.reason === 'string' ? entry.reason : 'peak' })
+        }
       }
       for (const [key, value] of Object.entries(parsed?.config ?? {})) {
         const field = CONFIG_INDEX.get(key)
@@ -436,6 +447,26 @@ class BudgetStore {
     this.saveSoon()
   }
 
+  /** A pending auto-continue for a turn a peak window interrupted, as a detached copy. */
+  resumeOf(sessionId) {
+    const entry = this.resume.get(sessionId)
+    return entry === undefined ? undefined : { ...entry }
+  }
+
+  setResume(sessionId, entry) {
+    if (entry === undefined) {
+      if (!this.resume.delete(sessionId)) return
+    } else {
+      this.resume.set(sessionId, { at: entry.at ?? Date.now(), reason: entry.reason ?? 'peak' })
+    }
+    this.saveSoon()
+  }
+
+  clearResume(sessionId) {
+    if (!this.resume.delete(sessionId)) return
+    this.saveSoon()
+  }
+
   /** Settings-page overrides, as a detached copy. */
   configOf() {
     return { ...this.config }
@@ -486,10 +517,11 @@ class BudgetStore {
 
   save() {
     const payload = {
-      version: 4,
+      version: 5,
       sessions: Object.fromEntries(this.records),
       peak: Object.fromEntries(this.peak),
       paused: Object.fromEntries(this.paused),
+      resume: Object.fromEntries(this.resume),
       config: { ...this.config },
       sync: { ...this.sync },
     }
@@ -1163,6 +1195,11 @@ export function apply(ctx, rawConfig) {
     try {
       if (agent.status === 'running') {
         const left = state?.minutesLeft
+        // Remember the interruption so the valley can pick the work back up: a goal
+        // resumes through the goal service, while a plain running turn is continued
+        // by re-queueing one follow-up message when the agent falls idle again.
+        store.setPaused(sessionId, true)
+        store.setResume(sessionId, { at: Date.now(), reason: 'peak' })
         agent.cancel({ kind: 'hook', reason: `session-budget: 峰时暂停${left ? `，${left} 分钟后谷时自动继续` : '，谷时自动继续'}` })
       }
     } catch (error) {
@@ -1170,25 +1207,66 @@ export function apply(ctx, rawConfig) {
     }
   }
 
-  /** Resume a goal this plugin paused when the valley begins. */
+  /** The user-role message that re-queues work a peak window interrupted. */
+  function autoResumeMessage() {
+    return {
+      id: randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: '峰时已结束，请继续上次被峰时中断的工作。' }],
+      source: { kind: 'session-budget', reason: 'peak-resume' },
+    }
+  }
+
+  /** True when this session may not continue on its own (a reached limit stops it). */
+  function stoppedByLimit(sessionId) {
+    const record = store.get(sessionId)
+    return record !== undefined && record.exhausted !== null && record.exhausted !== undefined
+  }
+
+  /** Resume whatever a peak window paused once the valley begins. */
   function resumeAfterPeak(sessionId) {
-    if (!store.pausedOf(sessionId)) return
-    store.setPaused(sessionId, false)
+    const paused = store.pausedOf(sessionId)
+    const pending = store.resumeOf(sessionId)
+    if (!paused && pending === undefined) return
     const agent = liveAgent(sessionId)
     const goals = goalsService()
-    if (agent === undefined || goals === undefined || goals === null) return
+    let goalResumed = false
+    if (paused) {
+      if (agent !== undefined && goals !== undefined && goals !== null) {
+        try {
+          const goal = goals.get(agent)
+          if (goal !== undefined && goal !== null && goal.phase !== 'complete') {
+            const alreadyRunning = goal.phase === 'active' && goal.activation === 'armed'
+            const code = goal.blockedReason?.code
+            if (!alreadyRunning && code !== 'budget-exhausted' && code !== 'round-limit') {
+              goals.resume(agent, { id: goal.id, revision: goal.revision })
+              goalResumed = true
+              log?.info?.(`session-budget: session ${sessionId} resumed after peak hours`)
+            }
+          }
+        } catch (error) {
+          store.setPaused(sessionId, true)
+          log?.warn?.(`session-budget: could not resume the goal after peak hours: ${error instanceof Error ? error.message : String(error)}`)
+          return
+        }
+      }
+      store.setPaused(sessionId, false)
+    }
+    if (pending === undefined) return
+    if (!peakFollowed(sessionId) || stoppedByLimit(sessionId)) {
+      store.clearResume(sessionId)
+      return
+    }
+    if (agent === undefined || agent.status !== 'idle') return
+    store.clearResume(sessionId)
+    if (goalResumed) return
+    if (Date.now() - (pending.at ?? 0) > AUTO_RESUME_MAX_AGE_MS) return
+    if (typeof agent.followup !== 'function') return
     try {
-      const goal = goals.get(agent)
-      if (goal === undefined || goal === null) return
-      if (goal.phase === 'complete') return
-      if (goal.phase === 'active' && goal.activation === 'armed') return
-      const code = goal.blockedReason?.code
-      if (code === 'budget-exhausted' || code === 'round-limit') return
-      goals.resume(agent, { id: goal.id, revision: goal.revision })
-      log?.info?.(`session-budget: session ${sessionId} resumed after peak hours`)
+      agent.followup(autoResumeMessage())
+      log?.info?.(`session-budget: session ${sessionId} auto-continued work interrupted by peak hours`)
     } catch (error) {
-      store.setPaused(sessionId, true)
-      log?.warn?.(`session-budget: could not resume the goal after peak hours: ${error instanceof Error ? error.message : String(error)}`)
+      log?.warn?.(`session-budget: could not auto-continue after peak hours: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1340,6 +1418,16 @@ export function apply(ctx, rawConfig) {
 
   ctx.on('session/event', (session, event) => {
     if (!config.enabled) return
+    if (event.type === 'user/message') {
+      // Any human (or other producer) input supersedes a queued peak auto-continue.
+      if (event.data?.source?.kind !== 'session-budget') store.clearResume(session.id)
+      return
+    }
+    if (event.type === 'turn/end') {
+      // A turn that finished on its own already moved the work forward.
+      if (event.data?.reason?.kind === 'completed') store.clearResume(session.id)
+      return
+    }
     if (event.type !== 'assistant/message' && event.type !== 'llm/retry-started') return
     foldUsage(session.id, event)
     const record = store.get(session.id)

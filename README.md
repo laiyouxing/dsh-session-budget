@@ -99,6 +99,8 @@ Defaults follow [DeepSeek's published pricing hours](https://api-docs.deepseek.c
 
 During a peak window the session is paused and its running turn cancelled. When the valley begins the goal is resumed, unless it is complete, already active, or blocked for a reason this plugin does not own.
 
+If the interrupted work had no removable goal (no goal, or a goal that is already complete), the plugin still picks the work back up: at the first valley tick where the agent is idle it re-queues one user-role follow-up message (`source.kind = 'session-budget'`) asking the model to continue the interrupted work, so no manual 继续 is needed. A pending auto-continue is dropped when a human message arrives, when a budget keeps the session stopped, or after 12 hours; it survives an app restart because it is stored in `budgets.json`.
+
 ## Automatic sync of prices and holidays
 
 The settings page can fetch both inputs instead of asking you to type them:
@@ -132,7 +134,7 @@ Both run when the plugin starts and then every `syncIntervalHours` while `autoSy
 
 ## Data and privacy
 
-- Store: `~/.dsh/session-budget/budgets.json` (`{ version: 4, sessions, peak, paused, config, sync }`), written atomically (temp file + rename) with a short debounce.
+- Store: `~/.dsh/session-budget/budgets.json` (`{ version: 5, sessions, peak, paused, resume, config, sync }`), written atomically (temp file + rename) with a short debounce.
 - The plugin only contacts the network for the two documented sources (the DeepSeek pricing docs page and a public holiday calendar), and only when a sync runs. The peak calculation itself is local time arithmetic.
 - HTTP surface, same-origin only: `GET /session-budget/status?session=…`, `POST /session-budget/update`, `GET /session-budget/config`, `POST /session-budget/config`, `GET /session-budget/sync`, `POST /session-budget/sync` (`{pricing:true}` / `{holidays:true}` / `{all:true}`).
 
@@ -182,7 +184,7 @@ Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Bug repor
 
 - **三种独立上限**：token、金额、时长（分钟），可任意组合，填 `0` 表示该项不限制。
 - **硬停止**：到达上限会取消正在跑的这一步（`agent.cancel({kind:'hook'})`）、把会话目标 block 或 pause（目标模式因此不会再自动开新一轮），并在之后每一步前直接 reject，直到你重置或提高上限。
-- **峰谷感知**：默认就是 DeepSeek 官方时段（北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时，周末与节假日全天谷时）。峰时暂停并取消当前步，进入谷时自动恢复。
+- **峰谷感知**：默认就是 DeepSeek 官方时段（北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时，周末与节假日全天谷时）。峰时暂停并取消当前步，进入谷时自动恢复；即使没有目标（或目标已完成）而只是普通一轮被打断，也会在谷时自动补一条「继续」把活接着干，不用你手动再发。
 - **补算历史用量**：会话中途设置预算，会把该会话日志里已有的用量折算进来，上限覆盖整场会话而不是只算设置之后。
 - **三个入口**：输入框上方的单行预算条、`/budget` 命令、完整设置页（设置 → 会话用量预算，插件页里也有）。
 - **自动同步**：设置页可一键查询 DeepSeek 官方定价（按币种选中文/英文页，可选 `deepseek-flash` / `deepseek-v4-pro` 与峰时/谷时价格），并同步公开的法定节假日日历；默认开启，每 24 小时自动刷新一次，失败时保留上次结果。
@@ -209,4 +211,4 @@ DSH 桌面版请在应用内的插件管理里添加 `github:laiyouxing/dsh-sess
 
 ### 数据
 
-只写本地 `~/.dsh/session-budget/budgets.json`（`{ version: 4, sessions, peak, paused, config, sync }`），无遥测。联网只发生在你点了「查询定价 / 同步节假日」或自动同步到点时，目标是 DeepSeek 官方文档页与公开节假日日历；抓取结果缓存在同一个文件里。
+只写本地 `~/.dsh/session-budget/budgets.json`（`{ version: 5, sessions, peak, paused, resume, config, sync }`），无遥测。联网只发生在你点了「查询定价 / 同步节假日」或自动同步到点时，目标是 DeepSeek 官方文档页与公开节假日日历；抓取结果缓存在同一个文件里。

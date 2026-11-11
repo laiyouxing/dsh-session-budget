@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-11-11
+
+### Fixed
+
+- A peak-time pause interrupted a plain running turn without an active goal (or with a goal that was already complete), and nothing continued it in the valley: the session needed a manual 继续. The plugin now remembers the interruption and, at the first valley tick where the agent is idle, re-queues one user-role follow-up message (`source.kind = 'session-budget'`) so the interrupted work continues on its own.
+- The pending auto-continue is dropped when a human message arrives, when a budget keeps the session stopped, and after 12 hours; it is persisted (`resume` in `budgets.json`, store version 5) so an interrupted session that is reopened during the valley also continues.
 ## [1.6.0] - 2026-11-10
 
 ### Added
