@@ -33,7 +33,7 @@ const { apply } = await import(pathToFileURL(target).href)
 
 const listeners = new Map()
 const effects = []
-const calls = { block: [], pause: [], cancel: [], reject: 0, next: 0, command: [], route: undefined }
+const calls = { block: [], pause: [], cancel: [], cancelOptions: [], reject: 0, next: 0, command: [], route: undefined }
 const agents = []
 const goal = { id: 'goal-1', revision: 3, phase: 'active', blockedReason: null }
 
@@ -139,17 +139,17 @@ apply(ctx, config)
 const agent = {
   id: 'session-1',
   status: 'running',
-  cancel(cause) { calls.cancel.push(cause); this.status = 'idle' },
+  cancel(cause, options) { calls.cancel.push(cause); calls.cancelOptions.push(options ?? null); this.status = 'idle' },
 }
 agents.push(agent)
 
 const emit = (event, handlerArgs) => {
   for (const handler of listeners.get(event) ?? []) handler(...handlerArgs)
 }
-const emitPreStep = () => {
+const emitPreStep = (messages = []) => {
   let decision
   for (const handler of listeners.get('agent/pre-step') ?? []) {
-    decision = handler({ agent, turn: 1, step: 1, messages: [], signal: new AbortController().signal }, () => {
+    decision = handler({ agent, turn: 1, step: 1, messages, signal: new AbortController().signal }, () => {
       calls.next += 1
       return { kind: 'enter', messages: [] }
     })
@@ -375,6 +375,55 @@ await setConfig({ peakWindows: '' })
 tick()
 assert(follows.length === 1, 'a turn that finished on its own supersedes the queued auto-continue')
 goal.phase = 'active'
+
+// ---- input typed while the session is limited stays queued ----
+const queued = []
+agent.inbox = {
+  hasPending: false,
+  prepend(target, message) { queued.unshift({ target, message }) },
+  append(target, message) { queued.push({ target, message }) },
+}
+const typedMessage = { id: 'm-typed', role: 'user', content: [{ type: 'text', text: '接着做' }], source: { kind: 'user' } }
+let woken = 0
+agent.wakeDriver = () => { woken += 1 }
+
+await command('set tokens=1000000')
+emit('session/event', [{ id: 'session-1' }, { type: 'assistant/message', data: { turn: 60, step: 1, usage: { inputTokens: 10, outputTokens: 5 } } }])
+await command('set tokens=5')
+agent.status = 'running'
+const exhaustedDecision = emitPreStep([typedMessage])
+assert(exhaustedDecision.kind === 'reject', 'an exhausted budget still rejects the step')
+assert(queued.length === 1 && queued[0].message === typedMessage && queued[0].target === 'next-turn', 'the rejected message goes back to the queue')
+assert(calls.cancelOptions.at(-1)?.keepInbox === true, 'the budget stop keeps the inbox')
+agent.inbox.hasPending = true
+await command('reset')
+assert(woken === 1, 'lifting the limit wakes the queued input')
+agent.inbox.hasPending = false
+
+queued.length = 0
+await command('peak on')
+await setConfig({ peakWindows: windowAroundNow(30, 30) })
+agent.status = 'running'
+const peakDecision = emitPreStep([typedMessage])
+assert(peakDecision.kind === 'reject', 'a peak window still rejects the step')
+assert(queued.length === 1 && queued[0].message === typedMessage, 'the peak rejection keeps the typed message queued')
+assert(calls.cancelOptions.at(-1)?.keepInbox === true, 'the peak stop keeps the inbox')
+
+{
+  queued.length = 0
+  woken = 0
+  agent.inbox.hasPending = true
+  agent.status = 'idle'
+  // No goal to resume here, so the valley has to wake the driver itself.
+  goal.phase = 'complete'
+  await setConfig({ peakWindows: '' })
+  tick()
+  assert(woken === 1, 'a waiting message resumes by waking the driver')
+  assert(follows.length === 1, 'no extra continue message is appended when input is already queued')
+  agent.inbox.hasPending = false
+  goal.phase = 'active'
+}
+await command('peak on')
 
 // ---- settings route: the very fields the Settings page edits ----
 const initialConfig = await readRoute('GET', '/session-budget/config')

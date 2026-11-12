@@ -1200,7 +1200,12 @@ export function apply(ctx, rawConfig) {
         // by re-queueing one follow-up message when the agent falls idle again.
         store.setPaused(sessionId, true)
         store.setResume(sessionId, { at: Date.now(), reason: 'peak' })
-        agent.cancel({ kind: 'hook', reason: `session-budget: 峰时暂停${left ? `，${left} 分钟后谷时自动继续` : '，谷时自动继续'}` })
+        // Keep the inbox: anything typed while the window was closing stays queued
+        // (and visible) instead of being dropped with the cancelled turn.
+        agent.cancel(
+          { kind: 'hook', reason: `session-budget: 峰时暂停${left ? `，${left} 分钟后谷时自动继续` : '，谷时自动继续'}` },
+          { keepInbox: true },
+        )
       }
     } catch (error) {
       log?.warn?.(`session-budget: could not cancel the running turn for peak hours: ${error instanceof Error ? error.message : String(error)}`)
@@ -1261,6 +1266,12 @@ export function apply(ctx, rawConfig) {
     store.clearResume(sessionId)
     if (goalResumed) return
     if (Date.now() - (pending.at ?? 0) > AUTO_RESUME_MAX_AGE_MS) return
+    // A message the user queued while the session was limited runs first: just wake the
+    // driver instead of appending a second "continue" behind it.
+    if (agent.inbox?.hasPending === true && typeof agent.wakeDriver === 'function') {
+      wakeQueued(agent)
+      return
+    }
     if (typeof agent.followup !== 'function') return
     try {
       agent.followup(autoResumeMessage())
@@ -1294,6 +1305,35 @@ export function apply(ctx, rawConfig) {
     stopAgent(agent, breach)
   }
 
+  /**
+   * Put the messages a rejected step claimed back at the head of the inbox, so input
+   * typed while the session is limited stays queued (and keeps showing in the queue)
+   * instead of being discarded with the blocked turn. Goal rounds and runtime context
+   * are left out: the goal round driver re-queues its own rounds, and context is
+   * rebuilt for every step.
+   */
+  function requeueClaimed(agent, messages) {
+    const list = Array.isArray(messages) ? messages : []
+    if (list.length === 0) return
+    const inbox = agent?.inbox
+    if (inbox === undefined || inbox === null) return
+    const target = typeof inbox.prepend === 'function' ? 'prepend' : typeof inbox.append === 'function' ? 'append' : undefined
+    if (target === undefined) return
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index]
+      if (message === undefined || message === null) continue
+      const kind = message.source?.kind
+      if (kind === 'goal' || kind === 'runtime-context') continue
+      try {
+        if (target === 'prepend') inbox.prepend('next-turn', message)
+        else inbox.append('next-turn', message)
+      } catch (error) {
+        log?.warn?.(`session-budget: could not keep a queued message: ${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+    }
+  }
+
   /** Block or pause the active goal, then cancel a running turn. */
   function stopAgent(agent, breach) {
     const goals = goalsService()
@@ -1314,7 +1354,8 @@ export function apply(ctx, rawConfig) {
     }
     try {
       if (agent.status === 'running') {
-        agent.cancel({ kind: 'hook', reason: `session-budget: ${breach.message}` })
+        // Same as the peak stop: keep what the user already queued.
+        agent.cancel({ kind: 'hook', reason: `session-budget: ${breach.message}` }, { keepInbox: true })
       }
     } catch (error) {
       log?.warn?.(`session-budget: could not cancel the running turn: ${error instanceof Error ? error.message : String(error)}`)
@@ -1325,14 +1366,31 @@ export function apply(ctx, rawConfig) {
   function resumeOwnGoal(sessionId) {
     const agent = liveAgent(sessionId)
     const goals = goalsService()
-    if (agent === undefined || goals === undefined || goals === null) return
+    if (agent === undefined) return
+    if (goals !== undefined && goals !== null) {
+      try {
+        const goal = goals.get(agent)
+        if (goal !== undefined && goal !== null && goal.phase === 'blocked' && goal.blockedReason?.code === 'budget-exhausted') {
+          goals.resume(agent, { id: goal.id, revision: goal.revision })
+        }
+      } catch (error) {
+        log?.warn?.(`session-budget: could not resume the goal: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    // Input queued while the session was limited runs as soon as the limit lifts.
+    wakeQueued(agent)
+  }
+
+  /** Wake an idle agent that is holding input the user typed while the limit was on. */
+  function wakeQueued(agent) {
+    if (agent === undefined || agent === null || agent.status !== 'idle') return
+    if (agent.inbox?.hasPending !== true) return
+    if (typeof agent.wakeDriver !== 'function') return
     try {
-      const goal = goals.get(agent)
-      if (goal === undefined || goal === null || goal.phase !== 'blocked') return
-      if (goal.blockedReason?.code !== 'budget-exhausted') return
-      goals.resume(agent, { id: goal.id, revision: goal.revision })
+      agent.wakeDriver()
+      log?.info?.(`session-budget: session ${agent.id} resumed with the queued input`)
     } catch (error) {
-      log?.warn?.(`session-budget: could not resume the goal: ${error instanceof Error ? error.message : String(error)}`)
+      log?.warn?.(`session-budget: could not resume the queued input: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1446,6 +1504,7 @@ export function apply(ctx, rawConfig) {
         } catch (error) {
           // A stop attempt that throws must not turn into a step failure.
         }
+        requeueClaimed(payload.agent, payload.messages)
         return { kind: 'reject' }
       }
       const breach = findBreach(record, config, Date.now())
@@ -1455,11 +1514,15 @@ export function apply(ctx, rawConfig) {
         } catch (error) {
           // keep rejecting even if the cooperative stop failed
         }
+        requeueClaimed(payload.agent, payload.messages)
         return { kind: 'reject' }
       }
     }
     try {
-      if (peakGate(sessionId, payload.agent)) return { kind: 'reject' }
+      if (peakGate(sessionId, payload.agent)) {
+        requeueClaimed(payload.agent, payload.messages)
+        return { kind: 'reject' }
+      }
     } catch (error) {
       // A peak policy failure must not let a step through unnoticed, but must not
       // break the turn either; fall through to the normal decision on error.

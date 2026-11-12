@@ -84,6 +84,7 @@ A budget record starts at the moment it is set. `reset` restarts the clock and t
 2. Goal stop — the session's goal is blocked (`blockedReason.code = budget-exhausted`) or paused (`onExceed: pause`), and `peak-hours` for peak pauses. DSH's round driver only continues an active, armed goal, so goal mode stops auto-continuing.
 3. Turn cancel — a running turn is cancelled with `agent.cancel({ kind: 'hook', reason })`, which the chat UI renders as an aborted turn.
 4. Resume — raising the limit, resetting, or the start of the valley clears the plugin's stop and resumes the goal it blocked itself; goals blocked for another reason (`round-limit`, user edits) are never resumed by this plugin.
+5. Queue — nothing the user types while the session is limited is thrown away. The turn-cancel keeps the inbox (`keepInbox: true`) and every rejected step puts its claimed messages back at the front of the inbox for the next turn, so the composer keeps showing them as queued. When the limit lifts (reset, a larger budget, `/budget off`, or the valley) the plugin wakes the idle agent, and the queued input runs without being sent again.
 
 ## Peak / off-peak schedule
 
@@ -186,6 +187,7 @@ Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Bug repor
 - **硬停止**：到达上限会取消正在跑的这一步（`agent.cancel({kind:'hook'})`）、把会话目标 block 或 pause（目标模式因此不会再自动开新一轮），并在之后每一步前直接 reject，直到你重置或提高上限。
 - **峰谷感知**：默认就是 DeepSeek 官方时段（北京时间周一至周五 09:00–12:00、14:00–18:00 为峰时，周末与节假日全天谷时）。峰时暂停并取消当前步，进入谷时自动恢复；即使没有目标（或目标已完成）而只是普通一轮被打断，也会在谷时自动补一条「继续」把活接着干，不用你手动再发。
 - **补算历史用量**：会话中途设置预算，会把该会话日志里已有的用量折算进来，上限覆盖整场会话而不是只算设置之后。
+- **输入不丢**：被限制期间你在输入框里发的消息不会消失，会留在这轮队列里；重置预算、提高上限、`/budget off` 或进入谷时时插件会自动唤醒空闲会话，把排队的内容接着跑，不需要重发。
 - **三个入口**：输入框上方的单行预算条、`/budget` 命令、完整设置页（设置 → 会话用量预算，插件页里也有）。
 - **自动同步**：设置页可一键查询 DeepSeek 官方定价（按币种选中文/英文页，可选 `deepseek-flash` / `deepseek-v4-pro` 与峰时/谷时价格），并同步公开的法定节假日日历；默认开启，每 24 小时自动刷新一次，失败时保留上次结果。
 

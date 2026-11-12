@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.6.2] - 2026-11-12
+
+### Fixed
+
+- Input typed while a budget or a peak window is stopping the session used to be discarded: the turn cancel cleared the inbox and every rejected step dropped the messages it had already claimed. The cancel now keeps the inbox (`keepInbox: true`), rejected steps put their claimed messages back at the front of the inbox (goal-round messages and per-step runtime context are skipped), so the composer keeps showing them as queued.
+- When the limit lifts — reset, a larger budget, `/budget off`, or the start of the valley — the plugin now wakes the idle agent (`wakeDriver`) so the queued input runs without being re-sent; a text typed during peak no longer waits for a manual 继续.
 ## [1.6.1] - 2026-11-11
 
 ### Fixed
